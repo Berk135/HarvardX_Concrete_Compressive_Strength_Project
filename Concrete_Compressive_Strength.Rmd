@@ -1,0 +1,872 @@
+---
+title: "Concrete Compressive Strength Project"
+author: "Berkalp Altay"
+date: "01/31/2022"
+output: 
+  pdf_document:
+    fig_width: 6
+    fig_height: 4
+    toc: true
+    toc_depth: 3
+    highlight: tango
+    keep_tex: true
+---
+
+```{r Setup, include=FALSE}
+#Specifying the knitr global options for chunks of code
+knitr::opts_chunk$set(echo = FALSE, 
+                      eval=TRUE,
+                      cache=FALSE, 
+                      cache.lazy = FALSE,
+                      message=FALSE,
+                      warning=FALSE,
+                      error = FALSE,
+                      fig.align="center",
+                      out.width = "100%",
+                      out.height = "50%",
+                      tidy.opts = list(width.cutoff = 20),
+                      tidy = TRUE,
+                      purl=TRUE
+                      )
+```
+
+
+```{r Installing required packages}
+#removing cache/__packages
+if (file.exists("cache/__packages")) unlink("cache/__packages")
+#Installing required packages if there are not already installed
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(Rborist)) install.packages("Rborist", repos = "http://cran.us.r-project.org")
+if(!require(xgboost)) install.packages("xgboost", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(kableExtra)) install.packages("kableExtra", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(patchwork)) install.packages("patchwork", repos = "http://cran.us.r-project.org")
+if(!require(ggthemes)) install.packages("ggthemes", repos = "http://cran.us.r-project.org")
+if(!require(psych)) install.packages("psych", repos = "http://cran.us.r-project.org")
+if(!require(cowplot)) install.packages("cowplot", repos = "http://cran.us.r-project.org")
+if(!require(formatR)) install.packages("formatR", repos = "http://cran.us.r-project.org")
+``` 
+
+```{r Loading packages}
+#Loading required packages
+library(tidyverse)
+library(caret)
+library(Rborist)
+library(xgboost)
+library(data.table)
+library(lubridate)
+library(kableExtra)
+library(ggplot2)
+library(patchwork)
+library(ggthemes)
+library(psych)
+library(cowplot)
+library(formatR)
+``` 
+
+```{r Download dataset}
+##########################################################
+# Create edx set, validation set (final hold-out test set)
+##########################################################
+
+# Note: this process could take a couple of minutes
+
+# Concrete Compressive Strength dataset:
+# https://archive.ics.uci.edu/ml/machine-learning-databases/concrete/compressive/Concrete_Data.xls
+
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+library(data.table)
+
+dl <- tempfile()
+download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/concrete/compressive/Concrete_Data.xls", dl)
+
+concrete <- as.data.table(readxl::read_xls(dl, col_names = TRUE))
+
+rm(dl)
+
+```
+\newpage
+## 1. Introduction
+This project aims to build a machine learning model to predict the compressive strength of concrete using the Concrete Compressive Strength Data Set from the UCI Machine Learning Repository.
+
+### 1.1. Dataset
+
+The Concrete Compressive Strength data set was added to the UCI Machine Learning Repository by Prof. I-Cheng Yeh. As concrete is one of the most important materials in civil engineering, it is crucial to predict its compressive strength, a highly accepted measure to evaluate the performance of concrete admixtures. In this Concrete Compressive Strength data set, there are 1030 concrete admixture instances with 9 different attributes (i.e. columns) associated with each of these admixtures.
+```{r Gathering Info About Data}
+#Finding column names in the data
+cnames <- colnames(concrete)
+#Finding total number of admixture instances (i.e. rows) in concrete dataset
+no_rows <- nrow(concrete)
+
+rm(cnames, no_rows)
+```
+
+7 of the 9 attributes represent various components that go into making concrete. 1 of the other 2 is the age of the concrete since it was made. The last one is the compressive strength of concrete which will be predicted using machine learning models. In the \underline{\href{https://archive.ics.uci.edu/ml/datasets/Concrete+Compressive+Strength}{UCI Machine Learning Repository}}, the details of these 9 attributes are given as follows:
+
+  * Cement (component 1) as kg in a m3 mixture
+  * Blast Furnace Slag (component 2) as kg in a m3 mixture 
+  * Fly Ash (component 3) as kg in a m3 mixture 
+  * Water (component 4) as kg in a m3 mixture 
+  * Superplasticizer (component 5) as kg in a m3 mixture
+  * Coarse Aggregate (component 6) as kg in a m3 mixture
+  * Fine Aggregate (component 7) as kg in a m3 mixture
+  * Age as Day (1~365)
+  * Concrete compressive strength as megapascals (MPa)
+  
+The column names of the data set will be redefined to shorten them.
+```{r Rename column names}
+#Rename column names
+colnames(concrete) <- c("cement", "slag", "ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age", "strength")
+head(concrete, 5) %>%
+  kable(caption = "First 5 Rows of Concrete Data Set with Renamed Columns", align = "cl") %>%
+  column_spec(column = 1:9, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+```
+  
+The test set will be 20% of the overall data set. Since there are 1030 rows of data in the dataset, a higher test set size seemed highly likely to restrict the train set size (i.e. train set size = 1-(test set size)) for model development. A lower test set size could be employed but 20% seemed to be a reasonable size to strike a balance between data required for model development and for model evaluation.
+
+```{r Create train and test sets, echo = FALSE}
+#Test set will be 20% of concrete data set
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = concrete$strength, times = 1, p = 0.2, list = FALSE)
+train_set <- concrete[-test_index,]
+test_set <- concrete[test_index,]
+```
+
+
+### 1.2. Evaluation Criteria
+In the next sections, the data will be explored and a machine learning model to predict concrete compressive strength will be built using the data. All machine learning models will be evaluated using the Root Mean Squared Error (RMSE).\
+
+The RMSE formula is as follows:
+
+$$\mbox{RMSE} = \sqrt{\frac{1}{n}\sum_{t=1}^{n}\hat{y}_i^2-y_i^2}$$\
+In this formula, $\hat{y}_i$ represents the predicted compressive strength of concrete based on a machine learning model while $y_i$ represents the actual compressive strengths from the dataset.\
+The lower the RMSE, the better the model is. The ultimate RMSE evaluation will be based on a test set that will be used only for model evaluation at the end.\
+
+```{r RMSE function}
+#Define the RMSE function
+rmse <- function(actual_ratings, predicted_ratings){
+  sqrt(mean((actual_ratings - predicted_ratings)^2, na.rm=TRUE))
+}
+
+```
+
+The XGBoost Model with Cross-Validation and Grid Search, the final model in this project, reaches an RMSE of __4.164__.
+
+## 2. Analysis
+
+### 2.1. Initial Data Exploration
+1030 rows of the original data set are divided into two datasets: _train_set_ with 822 rows and _test_set_ with 208 rows.\
+Also, both the _train_set_ and _test_set_ datasets have 9 columns.
+
+```{r Table 1: Columns names with explanation, tidy=TRUE, tidy.opts = list(width.cutoff = 20)}
+#Write column names & explanations
+columns <- c("cement", "slag", "ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age", "strength")
+explanations <- c("Cement used in concrete making measured in kilograms (kg) in a cubic meter (m3) mixture",
+                  "Blast furnace slag, a calcium-silicate product used in concrete making, measured in kilograms (kg) in a cubic meter (m3) mixture",
+                  "Fly ash, a byproduct from burning coal used in concrete making, measured in kilograms (kg) in a cubic meter (m3) mixture",
+                  "Water used in concrete making measured in kilograms (kg) in a cubic meter (m3) mixture",
+                  "Superplasticizer, an additive in concrete making to enhance workability and reduce water content, measured in kilograms (kg) in a cubic meter (m3) mixture",
+                  "Coarse Aggregate, irregular broken stones having a size of at least 4.75 mm or 3/16 inches used in concrete making, measured in kilograms (kg) in a cubic meter (m3) mixture",
+                  "Fine Aggregate, sand or crushed stone particles used in concrete making, measured in kilograms (kg) in a cubic meter (m3) mixture",
+                  "Age of concrete measured in days",
+                  "Concrete Compressive Strength, the capacity of concrete to withstand compressive weight, measured in megapascals (MPa)")
+
+#Show columns & their explanations in a table
+data.frame(columns, explanations) %>%
+  kable(format = "latex", caption = "Columns", col.names = c("Column", "Explanations"), align = "cl") %>%
+  column_spec(column = 1:2, border_left = TRUE, border_right = TRUE) %>%
+  column_spec(column = 2, border_right = TRUE, width = "40em") %>%
+  kable_styling(full_width=FALSE,
+                font_size = 9,
+                latex_options = "HOLD_position",
+                position = "center")
+
+#Remove stored data & values
+rm(columns, explanations)
+```
+
+The test set will be used as a final hold-out test set to evaluate the RMSE of the models. Therefore, only the train set will be used to build a model. Often, cross-validation will be used with models to try to improve the results.\ 
+
+Before moving to the next section, let's look at the first 5 columns of the train set and test set.
+```{r Print 5 rows of train_set}
+#Print 5 rows of train_set
+head(train_set, 5) %>%
+  kable(caption = "First 5 Rows of Train Set", align = "ccccccccc") %>%
+  column_spec(column = 1:9, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+```
+
+```{r Print 5 rows of test_set}
+#Print 5 rows of test_set
+head(test_set, 5) %>%
+  kable(caption = "First 5 Rows of Test Set", align = "ccccccccc") %>%
+  column_spec(column = 1:9, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+```
+
+### 2.2. Data Visualization & Description
+
+In the following sections, the entire data set composed of the train and test sets will be summarized and visualized. In ```Section 2.3. Preprocessing``` and ```Section 2.4. Modeling```, the train and test sets will be used.
+
+#### 2.2.1. Summary Statistics
+\
+Before visualizing the distribution of variables in the concrete data set, we can get the summary statistics of the set. We look at the minimum, first quartile, median, mean, third quartile, and maximum values for each predictor.
+
+```{r Table 1 - Summary Statistics for data set, out.width = '200px'}
+concrete %>% select(1:5) %>% summary() %>% as.data.frame.matrix(row.names = FALSE) %>%
+  kable(caption = "Summary Statistics for Concrete Data Set", align = "ccccc") %>%
+  column_spec(column = 1:5, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+
+
+concrete %>% select(6:9) %>% summary() %>% as.data.frame.matrix(row.names = FALSE) %>%
+  kable(align = "cccc") %>%
+  column_spec(column = 1:4, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+
+```
+
+As seen in the table above, each attribute has a different range of values that it can take. This might be a problem for some machine learning algorithms such as the K-Nearest Neighbors (KNN). Therefore, 8 input variables that will be used to predict concrete compressive strength will be standardized after Section _2.2. Data Visualization & Description_. 
+
+#### 2.2.2. Distribution
+\
+First, we look at the cement and blast furnace slag columns.
+```{r Figures 1 & 2 - Distribution of Cement & Blast Furnace Slag in the Data Set, fig.width = 11, fig.height = 5, fig.fullwidth = TRUE}
+#Plot distribution of amount of cement in the concrete data set
+fig1 <- concrete %>%
+  ggplot(aes(x=cement)) +
+  geom_histogram(binwidth = 50, boundary = 0 )+
+  labs(title = "Figure 1: Distribution of Cement Amount\n\n", 
+       caption = "\n*Width of each bin is 50",
+       x = "\nCement (kg in a m3 mixture)", 
+       y = "Frequency\n")+
+  #scale_x_discrete(breaks=NULL,
+  #                 labels=NULL) +
+  theme_economist() +
+  theme(plot.title = element_text(size = 14),
+        plot.caption = element_text(size = 12, hjust = 0))
+
+#Plot distribution of amount of blast furnace slag in the concrete data set
+fig2 <- concrete %>%
+  ggplot(aes(x=slag)) +
+  geom_histogram(binwidth = 50, boundary = 0)+
+  labs(title = "Figure 2: Distribution of Blast Furnace Slag\n\n", 
+       caption = "\n*Width of each bin is 50",
+       x = "\nBlast Furnace Slag (kg in a m3 mixture)", 
+       y = "Frequency\n")+
+  #scale_x_discrete(breaks=NULL,
+  #                 labels=NULL) +
+  theme_economist() +
+  theme(plot.title = element_text(size = 14),
+        plot.caption = element_text(size = 12, hjust = 0))
+
+#plot_grid(fig1, fig2, fig2, fig1, nrow=2)
+fig1 + fig2
+
+```
+
+As seen in Figures 1 and 2 above, the distributions of the cement amount and blast furnace slag are right-skewed. 
+
+Second, we look at the ash and water columns.
+```{r Figures 3 & 4 - Distribution of Ash & Water in the Data Set, fig.width = 11, fig.height = 5, fig.fullwidth = TRUE}
+#Plot distribution of amount of fly ash in the concrete data set
+fig3 <- concrete %>%
+  ggplot(aes(x=ash)) +
+  geom_histogram(binwidth = 20, boundary = 0)+
+  labs(title = "Figure 3: Distribution of Fly Ash Amount\n\n", 
+       caption = "\n*Width of each bin is 20",
+       x = "\nFly Ash (kg in a m3 mixture)", 
+       y = "Frequency\n")+
+  #scale_x_discrete(breaks=NULL,
+  #                 labels=NULL) +
+  theme_economist() +
+  theme(plot.title = element_text(size = 14),
+        plot.caption = element_text(size = 12, hjust = 0))
+
+#Plot distribution of amount of water in the concrete data set
+fig4 <- concrete %>%
+  ggplot(aes(x=water)) +
+  geom_histogram(binwidth = 20, boundary = 0)+
+  labs(title = "Figure 4: Distribution of Water Amount\n\n", 
+       caption = "\n*Width of each bin is 20",
+       x = "\nWater (kg in a m3 mixture)", 
+       y = "Frequency\n")+
+  #scale_x_discrete(breaks=NULL,
+  #                 labels=NULL) +
+  theme_economist() +
+  theme(plot.title = element_text(size = 14),
+        plot.caption = element_text(size = 12, hjust = 0))
+
+fig3 + fig4
+
+```
+
+As seen in Figures 3 and 4 above, most of the distribution of the fly ash amount is less than or equal to 20 kg in a m3 mixture while the distribution of water amount seems centered around 180 kg in a m3 mixture. 
+
+Third, we look at the superplasticizer and coarse aggregate columns.
+```{r Figures 5 & 6 - Distribution of Superplasticizer & Coarse Aggregate in the Data Set, fig.width = 11, fig.height = 5, fig.fullwidth = TRUE}
+#Plot distribution of amount of superplasticizer in the concrete data set
+fig5 <- concrete %>%
+  ggplot(aes(x=superplasticizer)) +
+  geom_histogram(binwidth = 2.5, boundary = 0)+
+  labs(title = "Figure 5: Distribution of Superplasticizer\n\n", 
+       caption = "\n*Width of each bin is 2.5",
+       x = "\nSuperplasticizer (kg in a m3 mixture)", 
+       y = "Frequency\n")+
+  #scale_x_discrete(breaks=NULL,
+  #                 labels=NULL) +
+  theme_economist() +
+  theme(plot.title = element_text(size = 14),
+        plot.caption = element_text(size = 12, hjust = 0))
+
+#Plot distribution of amount of coarse aggregate in the concrete data set
+fig6 <- concrete %>%
+  ggplot(aes(x=coarse_agg)) +
+  geom_histogram(binwidth = 50, boundary = 0)+
+  labs(title = "Figure 6: Distribution of Coarse Aggregate\n\n", 
+       caption = "\n*Width of each bin is 50",
+       x = "\nCoarse Aggregate (kg in a m3 mixture)", 
+       y = "Frequency\n")+
+  #scale_x_discrete(breaks=NULL,
+  #                 labels=NULL) +
+  theme_economist() +
+  theme(plot.title = element_text(size = 14),
+        plot.caption = element_text(size = 12, hjust = 0))
+
+fig5 + fig6
+
+```
+
+As seen in Figures 5 and 6 above, most of the distribution of the superplasticizer amount is less than or equal to 2.5 kg in a m3 mixture while the distribution of coarse aggregate amount might be considered approximately normal.
+
+Fourth, we look at the fine aggregate and age columns.
+```{r Figures 7 & 8 - Distribution of Fine Aggregate & Age of Concrete in the Data Set, fig.width = 11, fig.height = 5, fig.fullwidth = TRUE}
+#Plot distribution of amount of fine aggregate in the concrete data set
+fig7 <- concrete %>%
+  ggplot(aes(x=fine_agg)) +
+  geom_histogram(binwidth = 50, boundary = 0)+
+  labs(title = "Figure 7: Distribution of Fine Aggregate\n\n", 
+       caption = "\n*Width of each bin is 50",
+       x = "\nFine Aggregate (kg in a m3 mixture)", 
+       y = "Frequency\n")+
+  #scale_x_discrete(breaks=NULL,
+  #                 labels=NULL) +
+  theme_economist() +
+  theme(plot.title = element_text(size = 14),
+        plot.caption = element_text(size = 12, hjust = 0))
+
+#Plot distribution of age of concrete in the concrete data set
+fig8 <- concrete %>%
+  ggplot(aes(x=age)) +
+  geom_histogram(binwidth = 25, boundary = 0)+
+  labs(title = "Figure 8: Distribution of Age of Concrete\n\n", 
+       caption = "\n*Width of each bin is 25",
+       x = "\nAge of Concrete", 
+       y = "Frequency\n")+
+  #scale_x_discrete(breaks=NULL,
+  #                 labels=NULL) +
+  theme_economist() +
+  theme(plot.title = element_text(size = 14),
+        plot.caption = element_text(size = 12, hjust = 0))
+
+fig7 + fig8
+
+```
+
+As seen in Figures 7 and 8 above, most of the distribution of the fine aggregate amount can be considered approximately normal while most of the distribution of age of concrete is less than 100 days.
+
+Last, we look at the distribution of the compressive strength of concrete.
+```{r Figure 9 - Distribution of Compressive Strength of Concrete in the Data Set, fig.width = 11, fig.height = 5, fig.fullwidth = TRUE}
+#Plot distribution of amount of fine aggregate in the concrete data set
+fig9 <- concrete %>%
+  ggplot(aes(x=strength)) +
+  geom_histogram(binwidth = 10, boundary = 0)+
+  labs(title = "Figure 9: Distribution of Concrete Compressive Strength\n\n", 
+       caption = "\n*Width of each bin is 10",
+       x = "\nConcrete Compressive Strength (MPa, i.e. MegaPascals)", 
+       y = "Frequency\n")+
+  #scale_x_discrete(breaks=NULL,
+  #                 labels=NULL) +
+  theme_economist() +
+  theme(plot.title = element_text(size = 14),
+        plot.caption = element_text(size = 12, hjust = 0))
+
+fig9
+
+```
+
+As seen in Figure 9 above, the distribution of concrete compressive strength can be considered approximately normal.
+
+#### 2.2.3. Correlations
+\
+The correlations among variables can also be explored. In Figure 10 below, we can see that most variables have some correlations among them with darker blues and reds indicating stronger positive and negative correlation, respectively. We notice a strong negative correlation between the superplasticizer content and the water content. This negative relationship makes sense because superplasticizers are a type of water reducers that significantly reduce the amount of water required to make concrete. Thus, as the superplasticizer content increases, the water content is expected to decrease.
+
+```{r Figure 10 - Correlation matrix of the Data Set, fig.width = 10, fig.height = 10, fig.fullwidth = TRUE}
+#Plot distribution of amount of fine aggregate in the concrete data set
+fig10 <- corPlot(concrete,
+                 main = "Figure 10: Correlation Matrix",
+                 cex = 1.25,
+                 scale = FALSE,
+                 xlas=2)
+
+```
+### 2.3. Preprocessing
+
+First, all the predictors in the train set will be standardized with the mean and standard deviation of the predictors in the train set. Then, all the predictors in the test set will also be standardized with the mean and standard deviation of the predictors in the train set. 
+
+```{r Standardization of train and test sets}
+y_train <- train_set$strength
+y_test <- test_set$strength
+
+#train_set[,1:8] %>% mutate_all(scale)
+col_means <- colMeans(train_set[,1:8])
+col_stds <- apply(train_set[,1:8], 2, sd)
+train_scaled <- train_set[,1:8]
+for(i in 1:ncol(train_scaled)) {
+  train_scaled[,i] <- (train_scaled[,..i]-col_means[i])/col_stds[i]
+}
+
+test_scaled <- test_set[,1:8]
+for(i in 1:ncol(train_scaled)) {
+  test_scaled[,i] <- (test_scaled[,..i]-col_means[i])/col_stds[i]
+}
+
+train_scaled <- cbind(train_scaled, y_train)
+```
+
+
+### 2.4. Modeling Approach
+
+In this section, various models will be built. In all of these models, the test set will be used to evaluate the the models built using the train set.
+
+```{r Results Table for test set}
+#Create Results table for the test set to store RMSE of each model
+results_test <- data.frame(matrix(ncol = 2, nrow=0))
+#Give column names
+colnames(results_test) <- c("Model", "RMSE")
+#Change type of column Model to character
+results_test$Model <- as.character(results_test$Model)
+#Change type of column RMSE to double
+results_test$RMSE <- as.double(results_test$RMSE)
+
+```
+
+#### 2.4.1. Linear Regression
+\
+I start with the linear regression which will serve as the baseline model.
+
+```{r Linear Regression}
+#This model uses the 8 predictors to predict the concrete compressive strength
+lr_model <- lm(y_train ~ ., data = train_scaled)
+```
+\
+The baseline model of Linear Regression gives an RMSE of 10.891.
+\
+\
+As seen in Table 6 below, the Linear Regression model shows that all variables except for Coarse Aggregate (coarse_agg) and Fine Aggregate (fine_agg) are statistically significant at the 5% and 1% significance levels (i.e. 95% and 99% confidence intervals) since their p-values (i.e. Pr(>|t|)) are less than 0.01. On the other hand, Coarse Aggregate and Fine Aggregate have p-values around 0.396 and 0.501, indicating that they are not statistically significant.
+\
+\
+Regarding statistically significant predictors, cement has a regression coefficient of around 11.45. This indicates that an increase of 1 kg per m3 mixture in cement is associated with an increase of about 11.45 MPa in concrete compressive strength.
+\
+\
+On the other hand, water has a regression coefficient of about -3.94. This indicates that an increase of 1 kg per m3 mixture in water is associated with a decrease of 3.94 MPa in concrete compressive strength.
+\
+```{r Linear Regression Coefficients Table}
+summary(lr_model)$coefficients %>% 
+  kable(caption = "Linear Regression Coefficients Table",align = "ccccc") %>%
+  column_spec(column = 1:5, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+```
+
+```{r Results - Linear Regression}
+#This model uses the 8 predictors to predict the concrete compressive strength
+pred_lr= predict(lr_model,test_scaled)
+lr_rmse <- RMSE(y_test, pred_lr)
+#Store RMSE for test set in Results table
+results_test <- bind_rows(results_test, 
+                              data.frame(
+                                Model = "Linear Regression",
+                                RMSE = lr_rmse)
+                              )
+#Remove duplicates from Results table in case code is run more than once
+results_test <- results_test[!duplicated(results_test[, c("Model","RMSE")]),]
+```  
+
+Given that the Linear Regression model gives an RMSE of 10.891, I will look at other models to improve the RMSE.
+
+#### 2.4.2. K-Nearest Neighbors (KNN)
+\
+Now, a KNN model is used with its default settings. In the next section, grid search and cross-validation will be used to improve the results.
+
+```{r KNN fitting}
+#This KNN model uses the 8 predictors to predict the concrete compressive strength
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+knn_model <- train(y_train ~ ., 
+                   method = "knn", 
+                   data = train_scaled)
+```
+
+```{r Results - KNN}
+#Predict concrete compressive strength using the KNN model
+pred_knn= predict(knn_model,test_scaled)
+knn_rmse <- RMSE(y_test, pred_knn)
+#Store RMSE for test set in Results table
+results_test <- bind_rows(results_test, 
+                              data.frame(
+                                Model = "KNN",
+                                RMSE = knn_rmse)
+                              )
+#Remove duplicates from Results table in case code is run more than once
+results_test <- results_test[!duplicated(results_test[, c("Model","RMSE")]),]
+
+```
+
+The optimal number of nearest neighbors, i.e. k, is 7. The KNN model gives an RMSE of 9.152. This is an improvement over the baseline Linear Regression Model.
+
+
+#### 2.4.3. K-Nearest Neighbors (KNN) with Cross-Validation
+\
+With the KNN model, K-fold cross-validation is used. There are 10 folds, each test fold consisting of 10% of the train_set. Also, a grid search is employed for the parameter of the number of neighbors, i.e. k, which ranges from 1 to 51 in increments of 2. This means that the model tries each value of parameter k and determine which one gives the best result (i.e. lowest RMSE) when fitting the train set.
+
+```{r KNN+CV fitting}
+#This KNN+CV model uses the 8 predictors to predict the concrete compressive strength
+control <- trainControl(method = "cv", search="grid", number = 10, p = .9)
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)
+knn_cv_model <- train(y_train ~ .,
+                      method = "knn",
+                      data = train_scaled,
+                      tuneGrid = data.frame(k = seq(1, 51, 2)),
+                      trControl = control)
+
+```
+
+```{r Results - KNN+CV}
+#Predict concrete compressive strength using the KNN+CV model
+pred_knn_cv= predict(knn_cv_model,test_scaled)
+knn_cv_rmse <- RMSE(y_test, pred_knn_cv)
+#Store RMSE for test set in Results table
+results_test <- bind_rows(results_test, 
+                              data.frame(
+                                Model = "KNN+CV",
+                                RMSE = knn_cv_rmse)
+                              )
+#Remove duplicates from Results table in case code is run more than once
+results_test <- results_test[!duplicated(results_test[, c("Model","RMSE")]),]
+
+```
+
+The KNN + Cross-Validation model gives an RMSE of 8.871. This is an improvement over the KNN model without Cross-Validation. The optimal number of nearest neighbors, i.e. k, for this model is 5.
+In the next part, a Random Forest model will be used to improve results further.
+
+#### 2.4.4. Random Forest
+\
+Now, a Random Forest model is developed.
+I use the "Rborist" package and proceed with its default parameters which will be changed when grid search and cross-validation are utilized in the next model.
+
+```{r Random Forest fitting}
+#Random Forest
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)
+rf_model <-  train(y_train ~ .,
+                   method = "Rborist",
+                   data = train_scaled)
+```
+
+```{r Results - RF}
+#Predict concrete compressive strength using the Random Forest model
+pred_rf= predict(rf_model,test_scaled)
+rf_rmse <- RMSE(y_test, pred_rf)
+#Store RMSE for test set in Results table
+results_test <- bind_rows(results_test, 
+                              data.frame(
+                                Model = "Random Forest",
+                                RMSE = rf_rmse)
+                              )
+#Remove duplicates from Results table in case code is run more than once
+results_test <- results_test[!duplicated(results_test[, c("Model","RMSE")]),]
+
+```
+
+The Random Forest model gives an RMSE of 4.886. This is a major improvement over the KNN model with Cross-Validation and grid search.
+\
+\
+In Table 7 below, the relative variable importance of all the predictors for the Random Forest model is given. The variable importance gives the sum of decrease in error when a tree is split on that variable. This value when divided by the highest variable importance gives the relative variable importance. 
+\
+\
+As seen in Table 7, age has the highest variable importance whereas Fly Ash (ash) has the lowest variable importance with its relative variable importance as 7.5% of that of age as the predictor. When scaled against age, all other predictors have their variable importance ranging from 7.5% to 80.4% of that of age.
+
+```{r Variable Importance - RF}
+#Feature Importance
+varImp_rf<- varImp(rf_model, scale = FALSE)[["importance"]]
+varImp_rf$Overall <- varImp_rf$Overall / max(varImp_rf$Overall)
+varImp_rf %>% arrange(desc(Overall)) %>% 
+  kable(caption = "Relative Variable Importance of Random Forest Model",align = "cc") %>%
+  column_spec(column = 1:2, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+
+```
+\
+Given that the Random Forest model gives an RMSE of 4.886, grid search with cross-validation will be used next along with the Random Forest model to improve results further.
+
+#### 2.4.5. Random Forest with Cross-Validation
+\
+Now, a Random Forest model with cross-validation and grid search are used to improve the results even further. The k-fold cross-validation is used with 10 folds. The Rborist package is utilized with the following search space:
+
+  * number of trial predictors for a split (predFixed) ranging from 2 to 8 in increments of 1
+  * minimum number of distinct row references to split a node (minNode) ranging from 2 to 10 in increments of 1
+
+
+```{r Random Forest + CV fitting}
+#Random Forest with grid search and cross-validation
+control <- trainControl(method="cv", search = "grid", number = 10, p = 0.9)
+grid <- expand.grid(minNode = seq(2, 5) , predFixed = seq(2, 8))
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)
+rf_cv_model <-  train(y_train ~ .,
+                   method = "Rborist",
+                   data = train_scaled,
+                   trControl = control,
+                   tuneGrid = grid)
+
+```
+
+```{r Results - RF+CV}
+#Predict concrete compressive strength using Random Forest+CV model
+pred_rf_cv= predict(rf_cv_model,test_scaled)
+rf_cv_rmse <- RMSE(y_test, pred_rf_cv)
+#Store RMSE for test set in Results table
+results_test <- bind_rows(results_test, 
+                              data.frame(
+                                Model = "Random Forest+CV",
+                                RMSE = rf_cv_rmse)
+                              )
+#Remove duplicates from Results table in case code is run more than once
+results_test <- results_test[!duplicated(results_test[, c("Model","RMSE")]),]
+
+```
+The Random Forest model with grid search and cross-validation (Random Forest+CV) gives an RMSE of 4.784. This is a slight improvement over the Random Forest model without Cross-Validation and grid search. The optimal values of predFixed and minNode for this model are 5 and 2, respectively.
+\
+\
+In Table 8 below, the relative variable importance of all the predictors for the Random Forest + CV model is given. 
+\
+\
+As seen in Table 8, age still has the highest variable importance while Fly Ash (ash) has the lowest variable importance, again. Of particular interest is superplasticizer as a predictor. In the Random Forest model without cross-validation, superplasticizer was the fifth most important variable with 18.6% of the variable importance of age. With the Random Forest model with cross-validation and grid search, superplasticizer is the fourth most important variable with 26.6% of the variable importance of age.
+
+
+```{r Variable Importance - RF+CV}
+#Feature Importance
+varImp_rf_cv<- varImp(rf_cv_model, scale = FALSE)[["importance"]]
+varImp_rf_cv$Overall <- varImp_rf_cv$Overall / max(varImp_rf_cv$Overall)
+varImp_rf_cv %>% arrange(desc(Overall)) %>% 
+  kable(caption = "Relative Variable Importance of Random Forest+CV Model",align = "cc") %>%
+  column_spec(column = 1:2, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+
+```
+\
+While the Random Forest with grid search and cross-validation gives an RMSE of 4.784, the Extreme Gradient Boosting (XGBoost) model will be used next to improve results.
+
+#### 2.4.6. Extreme Gradient Boosting (XGBoost)
+\
+Now, the Extreme Gradient Boosting model is developed.
+The "xgboost" package is used with its default parameters which will be changed when I apply grid search and cross-validation in the next model.
+
+```{r XGB fitting}
+#XGBoost
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)
+xgb_model <-  train(y_train ~ .,
+                   method = "xgbTree",
+                   data = train_scaled,
+                   verbosity = 0)
+
+```
+
+```{r Results - XGB}
+#Predict concrete compressive strength using the XGBoost model
+pred_xgb= predict(xgb_model,test_scaled)
+xgb_rmse <- RMSE(y_test, pred_xgb)
+#Store RMSE for test set in Results table
+results_test <- bind_rows(results_test, 
+                              data.frame(
+                                Model = "XGBoost",
+                                RMSE = xgb_rmse)
+                              )
+#Remove duplicates from Results table in case code is run more than once
+results_test <- results_test[!duplicated(results_test[, c("Model","RMSE")]),]
+
+```
+
+The XGBoost model gives an RMSE of 5.01. This is slightly worse than the Random Forest model with cross-validation and grid search.
+\
+\
+In Table 9 below, the relative variable importance of all the predictors for the XGBoost model is given. 
+\
+\
+As seen in Table 9, age has the highest variable importance in the XGBoost model as was the case in the Random Forest model with and without cross-validation. In this model, superplasticizer has the lowest variable importance, 12% of that of age as a predictor. Of particular note is the fact that the second most important variable in this model, i.e. water, has only 46% of the variable importance of age whereas, in the Random Forest models, cement as the second most important predictor had about 78 or 80% of the variable importance of age. 
+
+```{r Variable Importance - XGB}
+#Feature Importance
+varImp_xgb<- varImp(xgb_model, scale = FALSE)[["importance"]]
+varImp_xgb$Overall <- varImp_xgb$Overall / max(varImp_xgb$Overall)
+varImp_xgb %>% arrange(desc(Overall)) %>% 
+  kable(caption = "Relative Variable Importance of XGBoost Model",align = "cc") %>%
+  column_spec(column = 1:2, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+
+```
+
+While the XGBoost model gives an RMSE of 5.01, grid search and cross-validation will be used next along with the XGBoost model to improve results.
+
+#### 2.4.7. Extreme Gradient Boosting (XGBoost) with Cross-Validation
+\
+Now, an XGBoost model with cross-validation and grid search are used to improve the results even further. The k-fold cross-validation is used with 10 folds. The xgboost package is utilized with the following search space:
+
+  * maximum number of iterations (nrounds) ranging from 100 to 500 in increments of 50
+  * step size shrinkage used in update (eta) ranging from 0.05 to 0.3 in increments of 0.05
+  * maximum depth of a tree (max_depth) ranging from 2 to 7 in increments of 1
+  
+```{r XGBoost + CV fitting}
+#XGBoost with grid search and cross-validation
+control <- trainControl(method="cv", search = "grid", number = 10, p = 0.9)
+grid <- expand.grid(nrounds=seq(100, 500, 50), max_depth = seq(2, 7), eta = seq(0.05, 0.3, 0.05), gamma = 0, colsample_bytree = 0.6, min_child_weight = 1, subsample = 1)
+options(warn = -1)
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)
+suppressWarnings(
+xgb_cv_model <-  train(y_train ~ .,
+                   method = "xgbTree",
+                   data = train_scaled,
+                   trControl = control,
+                   tuneGrid = grid,
+                   verbosity = 0)
+)
+
+```
+
+```{r Results - XGB+CV}
+#Predict concrete compressive strength using the XGBoost+CV model
+pred_xgb_cv= predict(xgb_cv_model,test_scaled)
+xgb_cv_rmse <- RMSE(y_test, pred_xgb_cv)
+#Store RMSE for test set in Results table
+results_test <- bind_rows(results_test, 
+                              data.frame(
+                                Model = "XGBoost+CV",
+                                RMSE = xgb_cv_rmse)
+                              )
+#Remove duplicates from Results table in case code is run more than once
+results_test <- results_test[!duplicated(results_test[, c("Model","RMSE")]),]
+
+```
+
+The XGBoost model with grid search and cross-validation (XGBoost + CV) gives an RMSE of 4.164. This is an improvement over the next best model, the Random Forest model with cross-validation and grid search. The optimal values of nrounds, max_depth, and eta are 500, 4, and 0.15, respectively.
+\
+\
+In Table 10 below, the relative variable importance of all the predictors for the XGBoost + CV model is given. \
+\
+As seen in Table 10, age continues to have the highest variable importance in the XGBoost + CV model as was the case in previous XGBoost and Random Forest models. Cement is the second most important variable in this model as in the Random Forest models but unlike in the XGBoost model without cross-validation. Cement has 57.6% of the variable importance of age whereas, in the Random Forest models, it had about 78 or 80% of the variable importance of age.
+
+
+```{r Variable Importance - XGB+CV}
+#Feature Importance
+varImp_xgb_cv<- varImp(xgb_cv_model, scale = FALSE)[["importance"]]
+varImp_xgb_cv$Overall <- varImp_xgb_cv$Overall / max(varImp_xgb_cv$Overall)
+varImp_xgb_cv %>% arrange(desc(Overall)) %>% 
+  kable(caption = "Relative Variable Importance of XGBoost+CV Model",align = "cc") %>%
+  column_spec(column = 1:2, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+
+```
+
+## 3. Results
+Overall, seven models have been built. The XGBoost Model with Cross-Validation and Grid Search (XGBoost + CV) has an RMSE of 4.164 MegaPascals (MPa), which is a major improvement of about 6.5 MPa over the baseline Linear Regression Model.
+For reference, the RMSE of all models found using the test set can be found in Table 11 below.
+```{r Table 7: Results Table for All models}
+#Show Validation Results Table for All models
+results_test %>%
+  kable(caption = "RMSEs of All Models Using Test Set", align="c") %>%
+  column_spec(column = 1: ncol(results_test), border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 13,
+                latex_options = c("HOLD_position","striped"),
+                position = "center")
+```
+
+The ultimate model was built using different algorithms along with grid search and cross-validation. The performance improved from an RMSE of __10.891__ (i.e. Linear Regression) to the final RMSE of __4.164__ (i.e. XGBoost + CV).
+
+## 4. Conclusion
+
+In this project, the Concrete Compressive Strength Data Set from the UCI Machine Learning Repository was used to build a model to predict the compressive strength of concrete using 8 different predictors.
+\
+
+This report introduced the Concrete Compressive Strength dataset, explored its properties, and visualized the data.\
+
+After these steps, the dataset was standardized. Then, machine learning models were built, beginning from the baseline linear regression model to an XGBoost model with cross-validation and grid search that significantly reduced the root mean square error (RMSE) between the actual compressive strength of concrete and its predicted compressive strength.\
+
+The performance improved the most when the Random Forest and Extreme Gradient Boosting (XGBoost) models were used. Using cross-validation as well as grid search for hyperparameter tuning led to further improvements.\
+
+All in all, the final model achieved an RMSE of __4.164__ MegaPascals (MPa).\
+
+Some limitations of this project are that it could not increase the number and range of hyperparameters for tuning a better model as such an increase would require greater computational power. 
+Also, other models such as SVM and artificial neural networks were not used as this project already utilized several well-known and highly performant (e.g. XGBoost) models. Any future work might further improve on this report by employing different methods.
+
+```{r Remove stored models and values}
+##Remove stored models and values if they exist
+if(exists("lr_rmse")) rm(lr_rmse)
+if(exists("pred_lr")) rm(pred_lr)
+if(exists("lr_model")) rm(lr_model)
+if(exists("knn_rmse")) rm(knn_rmse)
+if(exists("pred_knn")) rm(pred_knn)
+if(exists("knn_model")) rm(knn_model)
+if(exists("knn_cv_rmse")) rm(knn_cv_rmse)
+if(exists("pred_knn_cv")) rm(pred_knn_cv)
+if(exists("knn_cv_model")) rm(knn_cv_model)
+if(exists("rf_rmse")) rm(rf_rmse)
+if(exists("pred_rf")) rm(pred_rf)
+if(exists("rf_model")) rm(rf_model)
+if(exists("rf_cv_rmse")) rm(rf_cv_rmse)
+if(exists("pred_rf_cv")) rm(pred_rf_cv)
+if(exists("rf_cv_model")) rm(rf_cv_model)
+if(exists("xgb_rmse")) rm(xgb_rmse)
+if(exists("pred_xgb")) rm(pred_xgb)
+if(exists("xgb_model")) rm(xgb_model)
+if(exists("xgb_cv_rmse")) rm(xgb_cv_rmse)
+if(exists("pred_xgb_cv")) rm(pred_xgb_cv)
+if(exists("xgb_cv_model")) rm(xgb_cv_model)
+if(exists("varImp_rf")) rm(xgb_cv_model)
+if(exists("varImp_rf_cv")) rm(xgb_cv_model)
+if(exists("varImp_xgb")) rm(xgb_cv_model)
+if(exists("varImp_xgb_cv")) rm(xgb_cv_model)
+
+```
+
